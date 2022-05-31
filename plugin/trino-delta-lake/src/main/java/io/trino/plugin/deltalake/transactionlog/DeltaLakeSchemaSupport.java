@@ -39,6 +39,8 @@ import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.TypeSignatureParameter;
 import io.trino.spi.type.VarcharType;
 
+import javax.annotation.Nullable;
+
 import java.util.AbstractMap;
 import java.util.List;
 import java.util.Map;
@@ -96,7 +98,7 @@ public final class DeltaLakeSchemaSupport
                 .collect(toImmutableList());
     }
 
-    public static String serializeSchemaAsJson(List<DeltaLakeColumnHandle> columns, Map<String, Optional<String>> columnComments)
+    public static String serializeSchemaAsJson(List<DeltaLakeColumnHandle> columns, Map<String, String> columnComments)
     {
         try {
             return OBJECT_MAPPER.writeValueAsString(serializeStructType(columns, columnComments));
@@ -106,22 +108,24 @@ public final class DeltaLakeSchemaSupport
         }
     }
 
-    private static Map<String, Object> serializeStructType(List<DeltaLakeColumnHandle> columns, Map<String, Optional<String>> columnComments)
+    private static Map<String, Object> serializeStructType(List<DeltaLakeColumnHandle> columns, Map<String, String> columnComments)
     {
         ImmutableMap.Builder<String, Object> schema = ImmutableMap.builder();
 
-        schema.put("fields", columns.stream().map(column -> serializeStructField(column.getName(), column.getType(), columnComments.getOrDefault(column.getName(), Optional.empty()))).collect(toImmutableList()));
+        schema.put("fields", columns.stream().map(column -> serializeStructField(column.getName(), column.getType(), columnComments.get(column.getName()))).collect(toImmutableList()));
         schema.put("type", "struct");
 
         return schema.buildOrThrow();
     }
 
-    private static Map<String, Object> serializeStructField(String name, Type type, Optional<String> comment)
+    private static Map<String, Object> serializeStructField(String name, Type type, @Nullable String comment)
     {
         ImmutableMap.Builder<String, Object> fieldContents = ImmutableMap.builder();
 
         ImmutableMap.Builder<String, Object> metadata = ImmutableMap.builder();
-        comment.ifPresent(c -> metadata.put("comment", c));
+        if (comment != null) {
+            metadata.put("comment", comment);
+        }
 
         fieldContents.put("metadata", metadata.buildOrThrow());
         fieldContents.put("name", name);
@@ -173,7 +177,7 @@ public final class DeltaLakeSchemaSupport
         ImmutableMap.Builder<String, Object> fields = ImmutableMap.builder();
 
         fields.put("type", "struct");
-        fields.put("fields", rowType.getFields().stream().map(field -> serializeStructField(field.getName().orElse(null), field.getType(), Optional.empty())).collect(toImmutableList()));
+        fields.put("fields", rowType.getFields().stream().map(field -> serializeStructField(field.getName().orElse(null), field.getType(), null)).collect(toImmutableList()));
 
         return fields.buildOrThrow();
     }
@@ -281,22 +285,23 @@ public final class DeltaLakeSchemaSupport
                 .setName(fieldName)
                 .setType(buildType(typeManager, typeNode))
                 .setNullable(nullable)
-                .setComment(getComment(node))
+                .setComment(Optional.ofNullable(getComment(node)))
                 .build();
     }
 
-    public static Map<String, Optional<String>> getColumnComments(MetadataEntry metadataEntry)
+    public static Map<String, String> getColumnComments(MetadataEntry metadataEntry)
     {
         return Optional.ofNullable(metadataEntry.getSchemaString())
-                .map(DeltaLakeSchemaSupport::getColumnComment)
+                .map(DeltaLakeSchemaSupport::getColumnComments)
                 .orElseThrow(() -> new IllegalStateException("Serialized schema not found in transaction log for " + metadataEntry.getName()));
     }
 
-    private static Map<String, Optional<String>> getColumnComment(String json)
+    private static Map<String, String> getColumnComments(String json)
     {
         try {
             return stream(OBJECT_MAPPER.readTree(json).get("fields").elements())
-                    .map(DeltaLakeSchemaSupport::columnComment)
+                    .map(field -> new AbstractMap.SimpleEntry<>(field.get("name").asText(), getComment(field)))
+                    .filter(entry -> entry.getValue() != null)
                     .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
         }
         catch (JsonProcessingException e) {
@@ -304,16 +309,11 @@ public final class DeltaLakeSchemaSupport
         }
     }
 
-    private static Map.Entry<String, Optional<String>> columnComment(JsonNode node)
+    @Nullable
+    private static String getComment(JsonNode node)
     {
-        String fieldName = node.get("name").asText();
-        return new AbstractMap.SimpleEntry<>(fieldName, getComment(node));
-    }
-
-    private static Optional<String> getComment(JsonNode node)
-    {
-        return Optional.ofNullable(node.get("metadata").get("comment"))
-                .map(JsonNode::asText);
+        JsonNode comment = node.get("metadata").get("comment");
+        return comment == null ? null : comment.asText();
     }
 
     private static Type buildType(TypeManager typeManager, JsonNode typeNode)

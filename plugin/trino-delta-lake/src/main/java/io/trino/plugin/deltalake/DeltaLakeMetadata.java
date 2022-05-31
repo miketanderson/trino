@@ -385,8 +385,9 @@ public class DeltaLakeMetadata
     {
         DeltaLakeTableHandle tableHandle = (DeltaLakeTableHandle) table;
         String location = metastore.getTableLocation(tableHandle.getSchemaTableName(), session);
+        Map<String, String> columnComments = getColumnComments(tableHandle.getMetadataEntry());
         List<ColumnMetadata> columns = getColumns(tableHandle.getMetadataEntry()).stream()
-                .map(column -> getColumnMetadata(column, getColumnComments(tableHandle.getMetadataEntry())))
+                .map(column -> getColumnMetadata(column, columnComments.get(column.getName())))
                 .collect(toImmutableList());
 
         ImmutableMap.Builder<String, Object> properties = ImmutableMap.<String, Object>builder()
@@ -434,7 +435,8 @@ public class DeltaLakeMetadata
     public ColumnMetadata getColumnMetadata(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle columnHandle)
     {
         DeltaLakeTableHandle table = (DeltaLakeTableHandle) tableHandle;
-        return getColumnMetadata((DeltaLakeColumnHandle) columnHandle, getColumnComments(table.getMetadataEntry()));
+        DeltaLakeColumnHandle column = (DeltaLakeColumnHandle) columnHandle;
+        return getColumnMetadata(column, getColumnComments(table.getMetadataEntry()).get(column.getName()));
     }
 
     /**
@@ -495,8 +497,9 @@ public class DeltaLakeMetadata
 
                 // intentionally skip case when table snapshot is present but it lacks metadata portion
                 return metastore.getMetadata(metastore.getSnapshot(table, session), session).stream().map(metadata -> {
+                    Map<String, String> columnComments = getColumnComments(metadata);
                     List<ColumnMetadata> columnMetadata = getColumns(metadata).stream()
-                            .map(column -> getColumnMetadata(column, getColumnComments(metadata)))
+                            .map(column -> getColumnMetadata(column, columnComments.get(column.getName())))
                             .collect(toImmutableList());
                     return TableColumnsMetadata.forTable(table, columnMetadata);
                 });
@@ -617,8 +620,9 @@ public class DeltaLakeMetadata
                         .stream()
                         .map(column -> toColumnHandle(column, partitionColumns))
                         .collect(toImmutableList());
-                Map<String, Optional<String>> columnComments = tableMetadata.getColumns().stream()
-                        .collect(toImmutableMap(ColumnMetadata::getName, column -> Optional.ofNullable(column.getComment())));
+                Map<String, String> columnComments = tableMetadata.getColumns().stream()
+                        .filter(column -> column.getComment() != null)
+                        .collect(toImmutableMap(ColumnMetadata::getName, ColumnMetadata::getComment));
                 TransactionLogWriter transactionLogWriter = transactionLogWriterFactory.newWriterWithoutTransactionIsolation(session, targetPath.toString());
                 appendTableEntries(
                         0,
@@ -985,7 +989,7 @@ public class DeltaLakeMetadata
             String tableId,
             List<DeltaLakeColumnHandle> columns,
             List<String> partitionColumnNames,
-            Map<String, Optional<String>> columnComments,
+            Map<String, String> columnComments,
             Map<String, String> configuration,
             String operation,
             ConnectorSession session,
@@ -2169,13 +2173,13 @@ public class DeltaLakeMetadata
         return metastore;
     }
 
-    private static ColumnMetadata getColumnMetadata(DeltaLakeColumnHandle column, Map<String, Optional<String>> comments)
+    private static ColumnMetadata getColumnMetadata(DeltaLakeColumnHandle column, @Nullable String comment)
     {
         return ColumnMetadata.builder()
                 .setName(column.getName())
                 .setType(column.getType())
                 .setHidden(column.getColumnType() == SYNTHESIZED)
-                .setComment(comments.getOrDefault(column.getName(), Optional.empty()))
+                .setComment(Optional.ofNullable(comment))
                 .build();
     }
 
