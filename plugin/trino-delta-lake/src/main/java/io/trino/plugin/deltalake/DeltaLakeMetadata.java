@@ -160,6 +160,7 @@ import static io.trino.plugin.deltalake.metastore.HiveMetastoreBackedDeltaLakeMe
 import static io.trino.plugin.deltalake.procedure.DeltaLakeTableProcedureId.OPTIMIZE;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.extractPartitionColumns;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.extractSchema;
+import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.getColumnComments;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.serializeSchemaAsJson;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.serializeStatsAsJson;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.validateType;
@@ -385,7 +386,7 @@ public class DeltaLakeMetadata
         DeltaLakeTableHandle tableHandle = (DeltaLakeTableHandle) table;
         String location = metastore.getTableLocation(tableHandle.getSchemaTableName(), session);
         List<ColumnMetadata> columns = getColumns(tableHandle.getMetadataEntry()).stream()
-                .map(DeltaLakeMetadata::getColumnMetadata)
+                .map(column -> getColumnMetadata(column, getColumnComments(tableHandle.getMetadataEntry())))
                 .collect(toImmutableList());
 
         ImmutableMap.Builder<String, Object> properties = ImmutableMap.<String, Object>builder()
@@ -432,7 +433,8 @@ public class DeltaLakeMetadata
     @Override
     public ColumnMetadata getColumnMetadata(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle columnHandle)
     {
-        return getColumnMetadata((DeltaLakeColumnHandle) columnHandle);
+        DeltaLakeTableHandle table = (DeltaLakeTableHandle) tableHandle;
+        return getColumnMetadata((DeltaLakeColumnHandle) columnHandle, getColumnComments(table.getMetadataEntry()));
     }
 
     /**
@@ -494,7 +496,7 @@ public class DeltaLakeMetadata
                 // intentionally skip case when table snapshot is present but it lacks metadata portion
                 return metastore.getMetadata(metastore.getSnapshot(table, session), session).stream().map(metadata -> {
                     List<ColumnMetadata> columnMetadata = getColumns(metadata).stream()
-                            .map(DeltaLakeMetadata::getColumnMetadata)
+                            .map(column -> getColumnMetadata(column, getColumnComments(metadata)))
                             .collect(toImmutableList());
                     return TableColumnsMetadata.forTable(table, columnMetadata);
                 });
@@ -583,10 +585,6 @@ public class DeltaLakeMetadata
     @Override
     public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean ignoreExisting)
     {
-        if (tableMetadata.getColumns().stream().anyMatch(column -> column.getComment() != null)) {
-            throw new TrinoException(NOT_SUPPORTED, "This connector does not support creating tables with column comment");
-        }
-
         SchemaTableName schemaTableName = tableMetadata.getTable();
         String schemaName = schemaTableName.getSchemaName();
         String tableName = schemaTableName.getTableName();
@@ -619,6 +617,8 @@ public class DeltaLakeMetadata
                         .stream()
                         .map(column -> toColumnHandle(column, partitionColumns))
                         .collect(toImmutableList());
+                Map<String, Optional<String>> columnComments = tableMetadata.getColumns().stream()
+                        .collect(toImmutableMap(ColumnMetadata::getName, column -> Optional.ofNullable(column.getComment())));
                 TransactionLogWriter transactionLogWriter = transactionLogWriterFactory.newWriterWithoutTransactionIsolation(session, targetPath.toString());
                 appendTableEntries(
                         0,
@@ -626,6 +626,7 @@ public class DeltaLakeMetadata
                         randomUUID().toString(),
                         deltaLakeColumns,
                         partitionColumns,
+                        columnComments,
                         buildDeltaMetadataConfiguration(checkpointInterval),
                         CREATE_TABLE_OPERATION,
                         session,
@@ -887,6 +888,7 @@ public class DeltaLakeMetadata
                     randomUUID().toString(),
                     handle.getInputColumns(),
                     handle.getPartitionedBy(),
+                    ImmutableMap.of(),
                     buildDeltaMetadataConfiguration(handle.getCheckpointInterval()),
                     CREATE_TABLE_AS_OPERATION,
                     session,
@@ -963,6 +965,7 @@ public class DeltaLakeMetadata
                     handle.getMetadataEntry().getId(),
                     columnsBuilder.build(),
                     partitionColumns,
+                    ImmutableMap.of(),
                     buildDeltaMetadataConfiguration(checkpointInterval),
                     ADD_COLUMN_OPERATION,
                     session,
@@ -982,6 +985,7 @@ public class DeltaLakeMetadata
             String tableId,
             List<DeltaLakeColumnHandle> columns,
             List<String> partitionColumnNames,
+            Map<String, Optional<String>> columnComments,
             Map<String, String> configuration,
             String operation,
             ConnectorSession session,
@@ -1013,7 +1017,7 @@ public class DeltaLakeMetadata
                         null,
                         comment.orElse(null),
                         new Format("parquet", ImmutableMap.of()),
-                        serializeSchemaAsJson(columns),
+                        serializeSchemaAsJson(columns, columnComments),
                         partitionColumnNames,
                         ImmutableMap.copyOf(configuration),
                         createdTime));
@@ -2165,12 +2169,13 @@ public class DeltaLakeMetadata
         return metastore;
     }
 
-    private static ColumnMetadata getColumnMetadata(DeltaLakeColumnHandle column)
+    private static ColumnMetadata getColumnMetadata(DeltaLakeColumnHandle column, Map<String, Optional<String>> comments)
     {
         return ColumnMetadata.builder()
                 .setName(column.getName())
                 .setType(column.getType())
                 .setHidden(column.getColumnType() == SYNTHESIZED)
+                .setComment(comments.getOrDefault(column.getName(), Optional.empty()))
                 .build();
     }
 

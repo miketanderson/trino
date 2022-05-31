@@ -204,4 +204,32 @@ public class TestDeltaLakeDatabricksCreateTableCompatibility
                 .map(row -> row.get(1))
                 .findFirst().orElseThrow();
     }
+
+    @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS})
+    public void testCreateTableWithColumnComment()
+    {
+        String tableName = "test_dl_create_column_comment_" + randomTableSuffix();
+        String tableDirectory = "databricks-compatibility-test-" + tableName;
+
+        onTrino().executeQuery(format("CREATE TABLE delta.default.%s (col INT COMMENT 'test comment') WITH (location = 's3://%s/%s')",
+                tableName,
+                bucketName,
+                tableDirectory));
+
+        try {
+            assertThat(onTrino().executeQuery("SELECT comment FROM information_schema.columns WHERE table_schema = 'default' AND table_name = '" + tableName + "' AND column_name = 'col'"))
+                    .containsOnly(row("test comment"));
+
+            assertEquals(getColumnCommentOnDelta("default", tableName, "col"), "test comment");
+        }
+        finally {
+            onTrino().executeQuery("DROP TABLE delta.default." + tableName);
+        }
+    }
+
+    private static String getColumnCommentOnDelta(String schemaName, String tableName, String columnName)
+    {
+        QueryResult result = onDelta().executeQuery(format("DESCRIBE %s.%s %s", schemaName, tableName, columnName));
+        return (String) result.row(2).get(1);
+    }
 }
