@@ -969,7 +969,7 @@ public class DeltaLakeMetadata
                     handle.getMetadataEntry().getId(),
                     columnsBuilder.build(),
                     partitionColumns,
-                    ImmutableMap.of(),
+                    getColumnComments(handle.getMetadataEntry()),
                     buildDeltaMetadataConfiguration(checkpointInterval),
                     ADD_COLUMN_OPERATION,
                     session,
